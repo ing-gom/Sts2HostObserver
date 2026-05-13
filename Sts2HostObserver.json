@@ -1,0 +1,11 @@
+{
+    "id": "Sts2HostObserver",
+    "name": "STS2 Host Observer",
+    "author": "inggom",
+    "description": "Run a STS2 multiplayer lobby as a dedicated host — open a session, watch up to 4 clients play, never sit in a player slot yourself. Toggle via Sts2HostObserver.Runtime.ObserverState.Enabled (default false). Pre-alpha: scaffold + core patches only; lobby UI / character select null-safety still pending live testing.",
+    "version": "0.1.0",
+    "has_pck": false,
+    "has_dll": true,
+    "dependencies": [],
+    "affects_gameplay": false
+}
