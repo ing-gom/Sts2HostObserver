@@ -35,6 +35,8 @@ public partial class MainFile : Node
             {
                 Logger.Warn("OBSERVER MODE ACTIVE — host will NOT take a player slot. " +
                             "Up to 4 clients can join. This is pre-alpha; expect rough edges in lobby UI / run start.");
+                SpectatorInputHandler.Attach();
+                SpectatorStatusOverlay.Attach();
             }
             else
             {

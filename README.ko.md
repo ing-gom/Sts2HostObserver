@@ -9,11 +9,17 @@ Slay the Spire 2 멀티플레이 lobby 를 **dedicated host (전용 호스트)**
 
 ## 동작 개요
 
-STS2 멀티플레이는 호스트가 항상 player slot 0번을 차지. `StartRunLobby.AddLocalHostPlayer(UnlockState, int)` 가 lobby init 시 호스트를 `Players` 에 추가하는 명시적 진입점. 이 mod 는 Harmony Prefix 로 **`ObserverState.Enabled == true` 일 때 그 호출을 skip** — 결과적으로 0명 host + 4 slot 비어있는 채로 lobby 시작.
+STS2 멀티플레이는 호스트가 항상 player slot 0번을 차지. `StartRunLobby.AddLocalHostPlayer(UnlockState, int)` 가 lobby init 시 호스트를 `Players` 에 추가하는 명시적 진입점. 이 mod 는 (a) 그 호출을 skip 하고 (b) **`LocalContext.NetId` 를 실제 client 중 한 명의 NetId 로 redirect** — 그러면 host 의 in-game UI 가 그 client 의 view 로 자동 동작. combat / hand / intent / event / rest site / merchant / treasure / map 가 전부 `LocalContext.GetMe(...)` 기반이라 우리가 한 곳에서 redirect 하면 전체 UI 가 spectator view 로 따라옴.
 
-두 가지 patch:
-- **`SkipAddLocalHostPlayerPatch`** — `StartRunLobby.AddLocalHostPlayer(UnlockState, int)` 와 `AddLocalHostPlayerInternal` 에 Prefix. `null` 반환하고 원본 skip.
-- **`LocalContextGetMePatch`** — `LocalContext.GetMe` 에 Harmony Finalizer. `RunState.Players` 에 host 가 없으면 `LocalContext.GetMe(state)` 가 `InvalidOperationException("Local player not found")` throw — observer 모드에선 finalizer 가 그 exception 을 삼키고 caller 에게 `null` 반환.
+네 가지 patch + Godot input/UI layer:
+- **`SkipAddLocalHostPlayerPatch`** — `StartRunLobby.AddLocalHostPlayer(UnlockState, int)` 와 `AddLocalHostPlayerInternal` 에 Prefix. `null` 반환하고 원본 skip → `Players` 비어 있음.
+- **`LocalContextGetMePatch`** — `LocalContext.GetMe(...)` 에 Harmony Finalizer. `LocalContext.NetId` 가 redirect 안 됐을 때 (lobby 단계, client 아직 join 안 함) `"Local player not found"` throw 를 swallow 하고 caller 에게 `null` 반환.
+- **`LocalContextNetIdRedirectPatch` (핵심)** — `LocalContext.NetId` 의 getter Prefix. `SpectatorState.SpectatedPlayerNetId` 가 set 되어 있으면 host 자신의 NetId 대신 그 값 반환. 게임 코드의 모든 `GetMe()` 가 이 property 통과 → spectator client view 자동 적용.
+- **`LocalContextNetIdSetterCapturePatch`** — setter Postfix. `RunManager.Launch` 가 host NetId 를 쓰는 순간 그 값을 `SpectatorState.RealHostNetId` 에 기록 → spectatable client 목록에서 host 자신을 제외.
+- **`SpectatorInputHandler`** — `tree.Root` 에 attach 된 Godot Node. **Tab 키** 누르면 다음 non-host client 로 cycle.
+- **`SpectatorStatusOverlay`** — 화면 우측 상단 작은 라벨로 현재 spectated client 표시.
+
+`SpectatorState` 가 **lazy auto-spectate** 수행 — client 가 join 한 후 첫 번째 `LocalContext.NetId` 읽기 시점에 자동으로 첫 non-host player 선택. 즉 host 가 Tab 안 눌러도 기본적으로 Player 1 의 view 가 보이고, 거기서 Tab 으로 cycle 가능.
 
 나머지는 STS2 가 알아서 잘 처리:
 - `NRemoteLobbyPlayerContainer._nodes` 가 dynamic list — 4 slot 자동 표시
@@ -28,12 +34,17 @@ STS2 멀티플레이는 호스트가 항상 player slot 0번을 차지. `StartRu
 3. STS2 종료 → `observer.json` 을 `{ "enabled": true }` 로 편집 → 저장
 4. STS2 재실행 → Standard 또는 Daily 멀티플레이 lobby host. client 4명까지 join 가능. host 화면엔 자기 캐릭터 slot 자리에 빈 UI 가 보일 수도 있는데 pre-alpha 단계의 기대 동작.
 
+## 조작
+
+- **Tab 키** — 다음 non-host client 로 cycle.
+- 화면 우측 상단에 `[HostObserver] watching: <캐릭터 이름>  (Tab to cycle)` 표시.
+
 ## 알려진 pre-alpha 한계
 
-- **Lobby UI 의 character slot 깜빡임 / 빈칸**. `_lobby.LocalPlayer` 가 `default(LobbyPlayer)` (id=0, character=null) 반환 → `LocalPlayer.character.Name` 같은 UI 바인딩이 defensive null check 필요. 발견 즉시 patch 추가 예정.
-- **`RunManager.UpdateRichPresence()`, room completion handler 들** — `LocalContext.GetMe(State).Character` 를 null-check 없이 호출. 이 mod 의 finalizer 가 throw 를 잡지만 caller 가 받는 건 `null Player` 라 그 다음 코드가 또 NRE 가능.
-- **in-game 토글 UI 없음.** observer.json 편집 + 재시작 필요.
-- **실제 2 인스턴스 환경에서 테스트 안 됨.** 코드 차원 검증만.
+- **Lobby 단계에서 client 아직 join 안 했을 때**. client 가 들어오기 전엔 redirect 할 NetId 가 없어서 `GetMe` 가 null 반환 → lobby UI 가 `_lobby.LocalPlayer.character.Name` 류 binding 에서 빈칸/깜빡 가능. client 한 명이라도 들어오면 lazy auto-spectate 가 발동해서 host view 안정화.
+- **`_lobby.LocalPlayer` 는 `LocalContext.NetId` 와 별개**. 우리 redirect 가 `StartRunLobby.LocalPlayer` 는 안 건드림 (그쪽은 `LocalContext` 안 거치고 `NetService.NetId` 직접 사용). 어떤 화면이 `_lobby.LocalPlayer` 를 직접 보고 `.character` 에 null-check 없이 접근하면 NRE. 실제 2-인스턴스 테스트에서 발견되면 patch 추가.
+- **Tab 키 충돌 가능성**. unhandled-input 으로 받으니까 STS2 의 UI 가 Tab 을 먼저 소비하면 우리 handler 안 호출. 추후 rebindable 로 개선 가능.
+- **실제 2 STS2 인스턴스 환경에서 테스트 안 됨**. 코드 읽기 + single-instance 부팅 검증만 있음.
 
 ## 다른 mod 와의 호환성
 
